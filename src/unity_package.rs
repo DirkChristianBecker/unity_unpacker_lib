@@ -1,7 +1,9 @@
 use flate2::read::GzDecoder;
 use rust_tools::prelude::*;
 use std::{
-    collections::HashMap, fmt, fs, path::{Path, PathBuf}
+    collections::HashMap,
+    fmt, fs,
+    path::{Path, PathBuf},
 };
 use tar::Archive;
 
@@ -11,10 +13,12 @@ use crate::prelude::UnityAssetFile;
 pub enum UnityPackageReaderError {
     PackageNotFound,
     CorruptPackage,
-    DirectoryCouldNotBeCreated,
+    TmpDirectoryCouldNotBeCreated,
+    TargetDirectoryCouldNotBeCreated,
     WorkingDirectoryError,
     PathError,
     NotAPackageFile,
+    CouldReadMetaFile,
 }
 
 impl fmt::Display for UnityPackageReaderError {
@@ -23,22 +27,24 @@ impl fmt::Display for UnityPackageReaderError {
             UnityPackageReaderError::PackageNotFound => write!(f, "File not found"),
             UnityPackageReaderError::PathError => write!(f, "Could not create a valid path."),
             UnityPackageReaderError::CorruptPackage => write!(f, "Could not unpack a unity package, it seems to be corrupt."),
-            UnityPackageReaderError::DirectoryCouldNotBeCreated => write!(f, "Could not create the temporary directory to extract files to."),
+            UnityPackageReaderError::TmpDirectoryCouldNotBeCreated => write!(f, "Could not create the temporary directory to extract files to."),
+            UnityPackageReaderError::TargetDirectoryCouldNotBeCreated => write!(f, "Could not create the target directory to copy the asset to."),
             UnityPackageReaderError::WorkingDirectoryError => write!(f, "Could not determine the current working directory. Consider passing an absolute path to the file to create a UnityPackage."),
             UnityPackageReaderError::NotAPackageFile => write!(f, "The given path seems to point to a directory."),
+            UnityPackageReaderError::CouldReadMetaFile => write!(f, "Could not interpret meta data."),
         }
     }
 }
 
 pub struct UnityPackage {
-    /// The name of the file to unpack. 
+    /// The name of the file to unpack.
     path: String,
     /// The target directory. If none is set the current working directory and the name of the package will be used
-    target_path : Option<String>,
+    target_path: Option<String>,
     /// We have to unpack the file into a tmp directory
-    temp_directory : Option<String>,
+    temp_directory: Option<String>,
     /// The files we found hashed by the guid
-    files : HashMap<String, UnityAssetFile>,
+    files: HashMap<String, UnityAssetFile>,
 }
 
 impl UnityPackage {
@@ -46,9 +52,10 @@ impl UnityPackage {
     /// to the package on disk or the name of the file in the current
     /// working directory (or a subdirectory of the current working directory).
     pub fn new(
-        file_name: &str, 
-        target_path : Option<String>, 
-        temp_directory : Option<String>) -> Result<Self, UnityPackageReaderError> {
+        file_name: &str,
+        target_path: Option<String>,
+        temp_directory: Option<String>,
+    ) -> Result<Self, UnityPackageReaderError> {
         let p = Path::new(file_name);
 
         let mut path = String::from(file_name);
@@ -64,27 +71,29 @@ impl UnityPackage {
             }
         }
 
-        Ok(UnityPackage { 
-            path, 
-            target_path, 
+        Ok(UnityPackage {
+            path,
+            target_path,
             temp_directory,
-            files : HashMap::new(),
-         })
+            files: HashMap::new(),
+        })
     }
-    
-    pub fn get_path(&self) -> String { self.path.clone() }
-    pub fn get_file(&self, guid : &String) -> Option<&UnityAssetFile> { self.files.get(guid) }
+
+    pub fn get_path(&self) -> String {
+        self.path.clone()
+    }
+    pub fn get_file(&self, guid: &String) -> Option<&UnityAssetFile> {
+        self.files.get(guid)
+    }
 
     /// The default tmp directory is always the current [working directory]/tmp
     fn get_default_tmp_dir(&self) -> Result<PathBuf, UnityPackageReaderError> {
         match &self.temp_directory {
-            Some(s) => {
-                Ok(PathBuf::from(s))
-            },
+            Some(s) => Ok(PathBuf::from(s)),
             None => {
                 if let Ok(mut working_dir) = std::env::current_dir() {
                     working_dir.push("tmp");
-                    Ok(working_dir)            
+                    Ok(working_dir)
                 } else {
                     Err(UnityPackageReaderError::WorkingDirectoryError)
                 }
@@ -95,7 +104,7 @@ impl UnityPackage {
     /// Return the file name of the package without extension.
     fn get_package_file_name(&self) -> Result<String, UnityPackageReaderError> {
         let p = PathBuf::from(&self.path);
-        
+
         match p.file_stem() {
             Some(s) => {
                 if let Some(file_stem) = s.to_str() {
@@ -103,52 +112,36 @@ impl UnityPackage {
                 } else {
                     Err(UnityPackageReaderError::NotAPackageFile)
                 }
-                
-            },
-            None => {
-                Err(UnityPackageReaderError::NotAPackageFile)
-            },
+            }
+            None => Err(UnityPackageReaderError::NotAPackageFile),
         }
     }
 
     /// Get the target directory. If the target has been set by the user
-    /// then this directory is beeing return. 
+    /// then this directory is beeing return.
     /// Otherwise we use the current working directory and append the file name
-    /// of the package. 
+    /// of the package.
     fn get_default_target_dir(&self) -> Result<PathBuf, UnityPackageReaderError> {
         match &self.target_path {
-            Some(s) => {
-                Ok(PathBuf::from(s))
-            },
+            Some(s) => Ok(PathBuf::from(s)),
 
-            None => {
-                match self.get_package_file_name() {
-                    Ok(s) => {
-                        match std::env::current_dir() {
-                            Ok(mut r) => {
-                                r.push(s);
-                                Ok(r)
-                            },
-                            Err(_) => {
-                                Err(UnityPackageReaderError::WorkingDirectoryError)
-                            },
-                        }                        
-                    },
-                    Err(_) => 
-                    {
-                        Err(UnityPackageReaderError::NotAPackageFile)
-                    },
-                }
-            }
+            None => match self.get_package_file_name() {
+                Ok(s) => match std::env::current_dir() {
+                    Ok(mut r) => {
+                        r.push(s);
+                        Ok(r)
+                    }
+                    Err(_) => Err(UnityPackageReaderError::WorkingDirectoryError),
+                },
+                Err(_) => Err(UnityPackageReaderError::NotAPackageFile),
+            },
         }
     }
 
     pub fn unpack_package(
         &mut self,
         extract_to: Option<&Path>,
-    ) -> Result<PathBuf, UnityPackageReaderError> {
-        println!("{}", self.path);
-
+    ) -> Result<(), UnityPackageReaderError> {
         let tmp = get_file_as_byte_vec(Path::new(self.path.clone().as_str()));
         match tmp {
             Ok(bytes) => {
@@ -168,20 +161,20 @@ impl UnityPackage {
                 match std::fs::create_dir_all(path.clone()) {
                     Ok(_) => {}
                     Err(_) => {
-                        return Err(UnityPackageReaderError::DirectoryCouldNotBeCreated);
+                        return Err(UnityPackageReaderError::TmpDirectoryCouldNotBeCreated);
                     }
                 }
 
                 match archive.unpack(path.clone()) {
-                    Ok(_) => 
-                    {
-                        let r = path;
-                        match self.copy_files_to_target() {
-                            Ok(_) => { Ok(r) },
-                            Err(e) => { Err(e) } ,
-                        }
+                    Ok(_) => {}
+                    Err(_) => {
+                        return Err(UnityPackageReaderError::CorruptPackage);
                     }
-                    Err(_) => Err(UnityPackageReaderError::CorruptPackage),
+                }
+
+                match self.copy_files_to_target() {
+                    Ok(_) => Ok(()),
+                    Err(e) => Err(e),
                 }
             }
             Err(e) => match e {
@@ -191,52 +184,68 @@ impl UnityPackage {
         }
     }
 
-    fn copy_files_to_target(&mut self) -> Result<usize, UnityPackageReaderError> {        
+    fn copy_files_to_target(&mut self) -> Result<(), UnityPackageReaderError> {
         let p = self.get_default_tmp_dir();
         let t = self.get_default_target_dir();
 
-        let _target = match t {
-            Ok(f) => { f },
+        let target = match t {
+            Ok(f) => f,
             Err(e) => return Err(e),
         };
 
         let origin = match p {
-            Ok(f) => { f },
+            Ok(f) => f,
             Err(e) => return Err(e),
         };
 
         let files = match fs::read_dir(origin) {
-            Ok(f) => { f },
-            Err(_) => {  return Err(UnityPackageReaderError::DirectoryCouldNotBeCreated); },
+            Ok(f) => f,
+            Err(_) => {
+                return Err(UnityPackageReaderError::TmpDirectoryCouldNotBeCreated);
+            }
         };
 
         for entry in files {
             let entry = match entry {
-                Ok(f) => { f },
+                Ok(f) => f,
                 Err(_) => return Err(UnityPackageReaderError::CorruptPackage),
             };
 
             let p = entry.path();
             let asset_file = UnityAssetFile::from(p);
             match asset_file {
-                Ok(a) => {
+                Ok(mut a) => {
+                    match a.copy_asset(&target) {
+                        Ok(()) => {}
+                        Err(e) => {
+                            return Err(e);
+                        }
+                    }
                     self.files.insert(a.get_guid().clone(), a);
-                },
+                }
                 Err(_) => {
                     return Err(UnityPackageReaderError::CorruptPackage);
-                },
+                }
             }
         }
 
-        Ok(self.files.len())
-
+        Ok(())
     }
-
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(debug_assertions)]
+    fn get_test_base_path() -> PathBuf {
+        let mut r = std::env::current_dir().unwrap();
+        if r.ends_with("unity_unpacker_lib") {
+            r = r.parent().unwrap().to_path_buf();
+        }
+
+        r
+    }
 
     #[test]
     fn test_default_tmp_dir() {
@@ -283,8 +292,12 @@ mod tests {
         let mut t2 = std::env::current_dir().unwrap();
         t2.push("file_name");
 
-        let subject =
-            UnityPackage::new(p.clone().into_os_string().into_string().unwrap().as_str(), None, None).unwrap();
+        let subject = UnityPackage::new(
+            p.clone().into_os_string().into_string().unwrap().as_str(),
+            None,
+            None,
+        )
+        .unwrap();
         assert_eq!(p.into_os_string().into_string().unwrap(), subject.path);
         assert_eq!(subject.get_default_target_dir().unwrap(), t2);
     }
@@ -317,43 +330,61 @@ mod tests {
 
         assert_eq!(subject.get_default_target_dir().unwrap(), target);
         assert_eq!(subject.get_package_file_name().unwrap(), "file");
-        assert_eq!(subject.get_path(), origin.into_os_string().into_string().unwrap());
+        assert_eq!(
+            subject.get_path(),
+            origin.into_os_string().into_string().unwrap()
+        );
     }
 
     #[test]
     fn test_asset_file_internals() {
-        let mut subject = match UnityPackage::new("assets/test.unitypackage", None, None) {
-            Ok(s) => { s },
+        let base = get_test_base_path();
+        println!("{:?}", base);
+        let mut tmp = base.clone();
+        tmp.push("assets/tmp");
+
+        let mut target = base.clone();
+        target.push("assets/target");
+
+        let mut absolute_path = base.clone();
+        absolute_path.push("assets/test.unitypackage");
+
+        let mut subject = match UnityPackage::new(
+            absolute_path.to_str().unwrap(),
+            Some(target.to_str().unwrap().to_string()),
+            Some(tmp.to_str().unwrap().to_string()),
+        ) {
+            Ok(s) => s,
             Err(_) => panic!("Could not unpack package"),
         };
-        
-        let absolute_asset_target_path = match subject.unpack_package(None) {
-            Ok(e) => { e },
-            Err(e) => { panic!("{}", e) },
+
+        match subject.unpack_package(None) {
+            Ok(e) => e,
+            Err(e) => {
+                panic!("{}", e)
+            }
         };
 
-        let file = match subject.get_file(&"0b0b00b564994434b8c9fc09a95a4acc".to_string()) {
-            Some(f) => { f },
-            None => { panic!("The file does not exist in this package.")},
+        let file = match subject.get_file(&"1af567ac160bb164fb19b8cb9b55b34b".to_string()) {
+            Some(f) => f,
+            None => {
+                panic!("The file does not exist in this package.")
+            }
         };
 
-        let working_dir = match std::env::current_dir() {
-            Ok(e) => { e },
-            Err(_) => { panic!("Could not lookup working directory.")},
-        };
+        let working_dir = get_test_base_path();
 
         let mut absolute_meta = working_dir.clone();
-        absolute_meta.push("test/Assets/Synty/InterfaceApocalypseHUD/Sprites/HUD/SPR_HUD_Frame_Border_Grunge_Med_Simple.png.unitymeta");
+        absolute_meta.push("assets/Assets/Textures/Ground/IMGP1287.jpg.unitymeta");
 
         let mut absolute_target = working_dir.clone();
-        absolute_target.push("test/Assets/Synty/InterfaceApocalypseHUD/Sprites/HUD/SPR_HUD_Frame_Border_Grunge_Med_Simple.png");
+        absolute_target.push("assets/Assets/Textures/Ground/IMGP1287.jpg");
 
-        assert_eq!(file.get_guid(), "0b0b00b564994434b8c9fc09a95a4acc");
+        assert_eq!(file.get_guid(), "1af567ac160bb164fb19b8cb9b55b34b");
+
         assert_eq!(
-            file.get_relative_asset_path().to_str().unwrap(), 
-            "Assets/Synty/InterfaceApocalypseHUD/Sprites/HUD/SPR_HUD_Frame_Border_Grunge_Med_Simple.png");
-        assert_eq!(
-            absolute_asset_target_path, 
-            absolute_target);
+            file.get_relative_asset_path().to_str().unwrap(),
+            "Assets/Textures/Ground/IMGP1287.jpg"
+        );
     }
 }
