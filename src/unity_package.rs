@@ -82,6 +82,7 @@ impl UnityPackage {
     pub fn get_path(&self) -> String {
         self.path.clone()
     }
+    
     pub fn get_file(&self, guid: &String) -> Option<&UnityAssetFile> {
         self.files.get(guid)
     }

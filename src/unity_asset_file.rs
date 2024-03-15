@@ -1,5 +1,5 @@
 use crate::prelude::UnityPackageReaderError;
-use std::{fs, path::PathBuf};
+use std::{fs, path::{Path, PathBuf}};
 
 #[derive(Debug, Clone)]
 pub struct UnityAssetFile {
@@ -108,12 +108,12 @@ impl UnityAssetFile {
     /// directories inside the target folder, that are needed to achive this.
     /// Besides the asset itself the meta file is copied over as well. However its
     /// extension is changed to .unitymeta to destinguish it from other meta files.
-    pub fn copy_asset(&mut self, target_path: &PathBuf) -> Result<(), UnityPackageReaderError> {
+    pub fn copy_asset(&mut self, target_path: &Path) -> Result<(), UnityPackageReaderError> {
         if self.is_folder() {
             return Ok(());
         }
 
-        let mut absolute_target_path = target_path.clone();
+        let mut absolute_target_path = target_path.to_path_buf();
         // add the path we extracted from to the target directory.
         absolute_target_path.push(&self.target);
         let parent = match absolute_target_path.parent() {
@@ -141,26 +141,26 @@ impl UnityAssetFile {
             }
         };
 
-        let mut meta_target_path = target_path.clone();
-
-        let binding = asset.clone();
-        let target_file_name_tmp = match binding.file_stem() {
-            Some(stem) => stem.to_str(),
-            None => {
-                return Err(UnityPackageReaderError::CorruptPackage);
-            }
+        let mut meta_target_file_name = asset.to_path_buf();
+        let f = match meta_target_file_name.file_name()
+        {
+            Some(s) => s.to_str(),
+            None => { return Err(UnityPackageReaderError::CorruptPackage); }
         };
 
-        let mut meta_target_file_name = match target_file_name_tmp {
-            Some(stem) => String::from(stem),
-            None => {
-                return Err(UnityPackageReaderError::CorruptPackage);
-            }
+        let mut file_name = match f {
+            Some(s) => String::from(s),
+            None => { return Err(UnityPackageReaderError::CorruptPackage); }
         };
 
-        meta_target_file_name.push_str(".unitymeta");
-        meta_target_path.push(meta_target_file_name.as_str());
-        match std::fs::rename(&self.meta, meta_target_path) {
+        file_name.push_str(".unitymeta");
+        meta_target_file_name = match meta_target_file_name.parent() {
+            Some(s) => s.to_path_buf(),
+            None => { return Err(UnityPackageReaderError::CorruptPackage); }
+        };
+
+        meta_target_file_name.push(file_name);
+        match std::fs::rename(&self.meta, meta_target_file_name) {
             Ok(_) => {}
             Err(_) => {
                 return Err(UnityPackageReaderError::CorruptPackage);
