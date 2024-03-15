@@ -19,6 +19,7 @@ pub enum UnityPackageReaderError {
     PathError,
     NotAPackageFile,
     CouldReadMetaFile,
+    CouldNotDeleteTmp,
 }
 
 impl fmt::Display for UnityPackageReaderError {
@@ -32,6 +33,7 @@ impl fmt::Display for UnityPackageReaderError {
             UnityPackageReaderError::WorkingDirectoryError => write!(f, "Could not determine the current working directory. Consider passing an absolute path to the file to create a UnityPackage."),
             UnityPackageReaderError::NotAPackageFile => write!(f, "The given path seems to point to a directory."),
             UnityPackageReaderError::CouldReadMetaFile => write!(f, "Could not interpret meta data."),
+            UnityPackageReaderError::CouldNotDeleteTmp => write!(f, "Could not delete tmp directory."),
         }
     }
 }
@@ -82,7 +84,7 @@ impl UnityPackage {
     pub fn get_path(&self) -> String {
         self.path.clone()
     }
-    
+
     pub fn get_file(&self, guid: &String) -> Option<&UnityAssetFile> {
         self.files.get(guid)
     }
@@ -142,6 +144,7 @@ impl UnityPackage {
     pub fn unpack_package(
         &mut self,
         extract_to: Option<&Path>,
+        delete_tmp: bool,
     ) -> Result<(), UnityPackageReaderError> {
         let tmp = get_file_as_byte_vec(Path::new(self.path.clone().as_str()));
         match tmp {
@@ -174,10 +177,22 @@ impl UnityPackage {
                 }
 
                 match self.copy_files_to_target() {
-                    Ok(_) => Ok(()),
-                    Err(e) => Err(e),
+                    Ok(_) => {}
+                    Err(e) => {
+                        return Err(e);
+                    }
+                }
+
+                if delete_tmp {
+                    match std::fs::remove_dir_all(path) {
+                        Ok(_) => Ok(()),
+                        Err(_) => Err(UnityPackageReaderError::CouldNotDeleteTmp),
+                    }
+                } else {
+                    Ok(())
                 }
             }
+            
             Err(e) => match e {
                 FileErrors::FileNotFound => Err(UnityPackageReaderError::PackageNotFound),
                 FileErrors::CorruptFile => Err(UnityPackageReaderError::CorruptPackage),
@@ -359,7 +374,7 @@ mod tests {
             Err(_) => panic!("Could not unpack package"),
         };
 
-        match subject.unpack_package(None) {
+        match subject.unpack_package(None, true) {
             Ok(e) => e,
             Err(e) => {
                 panic!("{}", e)

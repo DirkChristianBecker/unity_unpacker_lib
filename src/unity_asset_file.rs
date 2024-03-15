@@ -1,5 +1,8 @@
 use crate::prelude::UnityPackageReaderError;
-use std::{fs, path::{Path, PathBuf}};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 #[derive(Debug, Clone)]
 pub struct UnityAssetFile {
@@ -132,7 +135,6 @@ impl UnityAssetFile {
             }
         }
 
-        // println!("Absolute target path: {:?}", absolute_target_path);
         let asset = match std::fs::rename(&self.asset, absolute_target_path.clone()) {
             Ok(_) => absolute_target_path,
             Err(e) => {
@@ -142,21 +144,26 @@ impl UnityAssetFile {
         };
 
         let mut meta_target_file_name = asset.to_path_buf();
-        let f = match meta_target_file_name.file_name()
-        {
+        let f = match meta_target_file_name.file_name() {
             Some(s) => s.to_str(),
-            None => { return Err(UnityPackageReaderError::CorruptPackage); }
+            None => {
+                return Err(UnityPackageReaderError::CorruptPackage);
+            }
         };
 
         let mut file_name = match f {
             Some(s) => String::from(s),
-            None => { return Err(UnityPackageReaderError::CorruptPackage); }
+            None => {
+                return Err(UnityPackageReaderError::CorruptPackage);
+            }
         };
 
         file_name.push_str(".unitymeta");
         meta_target_file_name = match meta_target_file_name.parent() {
             Some(s) => s.to_path_buf(),
-            None => { return Err(UnityPackageReaderError::CorruptPackage); }
+            None => {
+                return Err(UnityPackageReaderError::CorruptPackage);
+            }
         };
 
         meta_target_file_name.push(file_name);
