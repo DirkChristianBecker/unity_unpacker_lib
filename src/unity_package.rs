@@ -2,41 +2,15 @@ use flate2::read::GzDecoder;
 use rust_tools::prelude::*;
 use std::{
     collections::HashMap,
-    fmt, fs,
+    fs,
     path::{Path, PathBuf},
 };
 use tar::Archive;
 
-use crate::prelude::UnityAssetFile;
-
-#[derive(Debug, PartialEq, PartialOrd)]
-pub enum UnityPackageReaderError {
-    PackageNotFound,
-    CorruptPackage,
-    TmpDirectoryCouldNotBeCreated,
-    TargetDirectoryCouldNotBeCreated,
-    WorkingDirectoryError,
-    PathError,
-    NotAPackageFile,
-    CouldReadMetaFile,
-    CouldNotDeleteTmp,
-}
-
-impl fmt::Display for UnityPackageReaderError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            UnityPackageReaderError::PackageNotFound => write!(f, "File not found"),
-            UnityPackageReaderError::PathError => write!(f, "Could not create a valid path."),
-            UnityPackageReaderError::CorruptPackage => write!(f, "Could not unpack a unity package, it seems to be corrupt."),
-            UnityPackageReaderError::TmpDirectoryCouldNotBeCreated => write!(f, "Could not create the temporary directory to extract files to."),
-            UnityPackageReaderError::TargetDirectoryCouldNotBeCreated => write!(f, "Could not create the target directory to copy the asset to."),
-            UnityPackageReaderError::WorkingDirectoryError => write!(f, "Could not determine the current working directory. Consider passing an absolute path to the file to create a UnityPackage."),
-            UnityPackageReaderError::NotAPackageFile => write!(f, "The given path seems to point to a directory."),
-            UnityPackageReaderError::CouldReadMetaFile => write!(f, "Could not interpret meta data."),
-            UnityPackageReaderError::CouldNotDeleteTmp => write!(f, "Could not delete tmp directory."),
-        }
-    }
-}
+use crate::{
+    prelude::UnityAssetFile,
+    unpacker_error::{ErrorInformation, UnityPackageReaderError},
+};
 
 pub struct UnityPackage {
     /// The name of the file to unpack.
@@ -66,10 +40,18 @@ impl UnityPackage {
                 working_dir.push(file_name);
                 path = match working_dir.into_os_string().into_string() {
                     Ok(p) => p,
-                    Err(_) => return Err(UnityPackageReaderError::PathError),
+                    Err(e) => {
+                        return Err(UnityPackageReaderError::PathError(ErrorInformation::new(
+                            Some(format!("{:?}", e)),
+                            file!(),
+                            line!(),
+                        )))
+                    }
                 }
             } else {
-                return Err(UnityPackageReaderError::WorkingDirectoryError);
+                return Err(UnityPackageReaderError::WorkingDirectoryError(
+                    ErrorInformation::new(None, file!(), line!()),
+                ));
             }
         }
 
@@ -90,7 +72,7 @@ impl UnityPackage {
     }
 
     /// The default tmp directory is always the current [working directory]/tmp
-    fn get_default_tmp_dir(&self) -> Result<PathBuf, UnityPackageReaderError> {
+    pub fn get_tmp_dir(&self) -> Result<PathBuf, UnityPackageReaderError> {
         match &self.temp_directory {
             Some(s) => Ok(PathBuf::from(s)),
             None => {
@@ -98,7 +80,9 @@ impl UnityPackage {
                     working_dir.push("tmp");
                     Ok(working_dir)
                 } else {
-                    Err(UnityPackageReaderError::WorkingDirectoryError)
+                    Err(UnityPackageReaderError::WorkingDirectoryError(
+                        ErrorInformation::new(None, file!(), line!()),
+                    ))
                 }
             }
         }
@@ -113,10 +97,14 @@ impl UnityPackage {
                 if let Some(file_stem) = s.to_str() {
                     Ok(String::from(file_stem))
                 } else {
-                    Err(UnityPackageReaderError::NotAPackageFile)
+                    Err(UnityPackageReaderError::NotAPackageFile(
+                        ErrorInformation::new(None, file!(), line!()),
+                    ))
                 }
             }
-            None => Err(UnityPackageReaderError::NotAPackageFile),
+            None => Err(UnityPackageReaderError::NotAPackageFile(
+                ErrorInformation::new(None, file!(), line!()),
+            )),
         }
     }
 
@@ -124,7 +112,7 @@ impl UnityPackage {
     /// then this directory is beeing return.
     /// Otherwise we use the current working directory and append the file name
     /// of the package.
-    fn get_default_target_dir(&self) -> Result<PathBuf, UnityPackageReaderError> {
+    pub fn get_target_dir(&self) -> Result<PathBuf, UnityPackageReaderError> {
         match &self.target_path {
             Some(s) => Ok(PathBuf::from(s)),
 
@@ -134,45 +122,48 @@ impl UnityPackage {
                         r.push(s);
                         Ok(r)
                     }
-                    Err(_) => Err(UnityPackageReaderError::WorkingDirectoryError),
+                    Err(e) => Err(UnityPackageReaderError::WorkingDirectoryError(
+                        ErrorInformation::new(Some(format!("{}", e)), file!(), line!()),
+                    )),
                 },
-                Err(_) => Err(UnityPackageReaderError::NotAPackageFile),
+                Err(e) => Err(UnityPackageReaderError::NotAPackageFile(
+                    ErrorInformation::new(Some(format!("{}", e)), file!(), line!()),
+                )),
             },
         }
     }
 
-    pub fn unpack_package(
-        &mut self,
-        extract_to: Option<&Path>,
-        delete_tmp: bool,
-    ) -> Result<(), UnityPackageReaderError> {
+    pub fn unpack_package(&mut self, delete_tmp: bool) -> Result<(), UnityPackageReaderError> {
         let tmp = get_file_as_byte_vec(Path::new(self.path.clone().as_str()));
         match tmp {
             Ok(bytes) => {
-                let path = match extract_to {
-                    Some(t) => PathBuf::from(t),
-                    None => match self.get_default_tmp_dir() {
-                        Ok(e) => e,
-                        Err(e) => {
-                            return Err(e);
-                        }
-                    },
-                };
-
                 let tar = GzDecoder::new(&bytes[..]);
                 let mut archive = Archive::new(tar);
 
-                match std::fs::create_dir_all(path.clone()) {
+                let tmp_path = match self.get_tmp_dir() {
+                    Ok(e) => e,
+                    Err(e) => {
+                        return Err(UnityPackageReaderError::TmpDirectoryCouldNotBeCreated(
+                            ErrorInformation::new(Some(format!("{}", e)), file!(), line!()),
+                        ));
+                    }
+                };
+
+                match std::fs::create_dir_all(tmp_path.clone()) {
                     Ok(_) => {}
-                    Err(_) => {
-                        return Err(UnityPackageReaderError::TmpDirectoryCouldNotBeCreated);
+                    Err(e) => {
+                        return Err(UnityPackageReaderError::TmpDirectoryCouldNotBeCreated(
+                            ErrorInformation::new(Some(format!("{}", e)), file!(), line!()),
+                        ));
                     }
                 }
 
-                match archive.unpack(path.clone()) {
+                match archive.unpack(tmp_path.clone()) {
                     Ok(_) => {}
-                    Err(_) => {
-                        return Err(UnityPackageReaderError::CorruptPackage);
+                    Err(e) => {
+                        return Err(UnityPackageReaderError::CorruptPackage(
+                            ErrorInformation::new(Some(format!("{}", e)), file!(), line!()),
+                        ));
                     }
                 }
 
@@ -184,25 +175,31 @@ impl UnityPackage {
                 }
 
                 if delete_tmp {
-                    match std::fs::remove_dir_all(path) {
+                    match std::fs::remove_dir_all(tmp_path) {
                         Ok(_) => Ok(()),
-                        Err(_) => Err(UnityPackageReaderError::CouldNotDeleteTmp),
+                        Err(e) => Err(UnityPackageReaderError::CouldNotDeleteTmp(
+                            ErrorInformation::new(Some(format!("{}", e)), file!(), line!()),
+                        )),
                     }
                 } else {
                     Ok(())
                 }
             }
-            
+
             Err(e) => match e {
-                FileErrors::FileNotFound => Err(UnityPackageReaderError::PackageNotFound),
-                FileErrors::CorruptFile => Err(UnityPackageReaderError::CorruptPackage),
+                FileErrors::FileNotFound => Err(UnityPackageReaderError::PackageNotFound(
+                    ErrorInformation::new(None, file!(), line!()),
+                )),
+                FileErrors::CorruptFile => Err(UnityPackageReaderError::CorruptPackage(
+                    ErrorInformation::new(None, file!(), line!()),
+                )),
             },
         }
     }
 
     fn copy_files_to_target(&mut self) -> Result<(), UnityPackageReaderError> {
-        let p = self.get_default_tmp_dir();
-        let t = self.get_default_target_dir();
+        let p = self.get_tmp_dir();
+        let t = self.get_target_dir();
 
         let target = match t {
             Ok(f) => f,
@@ -214,17 +211,23 @@ impl UnityPackage {
             Err(e) => return Err(e),
         };
 
-        let files = match fs::read_dir(origin) {
+        let files = match fs::read_dir(origin.clone()) {
             Ok(f) => f,
-            Err(_) => {
-                return Err(UnityPackageReaderError::TmpDirectoryCouldNotBeCreated);
+            Err(e) => {
+                return Err(UnityPackageReaderError::TmpDirectoryCouldNotBeCreated(
+                    ErrorInformation::new(Some(format!("{}", e)), file!(), line!()),
+                ));
             }
         };
 
         for entry in files {
             let entry = match entry {
                 Ok(f) => f,
-                Err(_) => return Err(UnityPackageReaderError::CorruptPackage),
+                Err(e) => {
+                    return Err(UnityPackageReaderError::CorruptPackage(
+                        ErrorInformation::new(Some(format!("{}", e)), file!(), line!()),
+                    ))
+                }
             };
 
             let p = entry.path();
@@ -239,8 +242,8 @@ impl UnityPackage {
                     }
                     self.files.insert(a.get_guid().clone(), a);
                 }
-                Err(_) => {
-                    return Err(UnityPackageReaderError::CorruptPackage);
+                Err(e) => {
+                    return Err(e);
                 }
             }
         }
@@ -251,9 +254,9 @@ impl UnityPackage {
 
 #[cfg(test)]
 mod tests {
+    use serial_test::serial;
     use super::*;
 
-    #[cfg(debug_assertions)]
     fn get_test_base_path() -> PathBuf {
         let mut r = std::env::current_dir().unwrap();
         if r.ends_with("unity_unpacker_lib") {
@@ -273,8 +276,8 @@ mod tests {
 
         let item = UnityPackage::new("file.unitypackage", None, None).unwrap();
 
-        assert_eq!(p, item.get_default_tmp_dir().unwrap());
-        assert_eq!(item.get_default_target_dir().unwrap(), t2);
+        assert_eq!(p, item.get_tmp_dir().unwrap());
+        assert_eq!(item.get_target_dir().unwrap(), t2);
     }
 
     #[test]
@@ -289,7 +292,7 @@ mod tests {
         let package = UnityPackage::new(n, None, None).unwrap();
 
         assert_eq!(p.into_os_string().into_string().unwrap(), package.path);
-        assert_eq!(package.get_default_target_dir().unwrap(), t2);
+        assert_eq!(package.get_target_dir().unwrap(), t2);
     }
 
     #[test]
@@ -315,7 +318,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(p.into_os_string().into_string().unwrap(), subject.path);
-        assert_eq!(subject.get_default_target_dir().unwrap(), t2);
+        assert_eq!(subject.get_target_dir().unwrap(), t2);
     }
 
     #[test]
@@ -326,8 +329,8 @@ mod tests {
 
         let subject = UnityPackage::new("test.unitypackage", None, Some(p.clone())).unwrap();
 
-        assert_eq!(subject.get_default_tmp_dir().unwrap(), PathBuf::from(p));
-        assert_eq!(subject.get_default_target_dir().unwrap(), t2);
+        assert_eq!(subject.get_tmp_dir().unwrap(), PathBuf::from(p));
+        assert_eq!(subject.get_target_dir().unwrap(), t2);
     }
 
     #[test]
@@ -344,7 +347,7 @@ mod tests {
 
         let subject = UnityPackage::new(&o, Some(t), None).unwrap();
 
-        assert_eq!(subject.get_default_target_dir().unwrap(), target);
+        assert_eq!(subject.get_target_dir().unwrap(), target);
         assert_eq!(subject.get_package_file_name().unwrap(), "file");
         assert_eq!(
             subject.get_path(),
@@ -353,6 +356,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_asset_file_internals() {
         let base = get_test_base_path();
         println!("{:?}", base);
@@ -374,7 +378,7 @@ mod tests {
             Err(_) => panic!("Could not unpack package"),
         };
 
-        match subject.unpack_package(None, true) {
+        match subject.unpack_package(true) {
             Ok(e) => e,
             Err(e) => {
                 panic!("{}", e)
@@ -402,5 +406,44 @@ mod tests {
             file.get_relative_asset_path().to_str().unwrap(),
             "Assets/Textures/Ground/IMGP1287.jpg"
         );
+
+        std::fs::remove_dir_all(target.clone()).unwrap();
+
+        assert!(!target.exists());
+        assert!(!tmp.exists());
+    }
+
+    // Check if tmp directory still exists after unpacking.
+    #[test]
+    #[serial]
+    fn test_deleting_tmp_files() {
+        let base = get_test_base_path();
+        println!("{:?}", base);
+        let mut tmp = base.clone();
+        tmp.push("assets/tmp");
+
+        let mut target = base.clone();
+        target.push("assets/target");
+
+        let mut absolute_path = base.clone();
+        absolute_path.push("assets/test.unitypackage");
+
+        let mut subject = UnityPackage::new(
+            absolute_path.to_str().unwrap(),
+            Some(target.to_str().unwrap().to_string()),
+            Some(tmp.to_str().unwrap().to_string()),
+        )
+        .unwrap();
+
+        subject.unpack_package(false).unwrap();
+
+        assert!(tmp.exists());
+
+        // Clean up
+        std::fs::remove_dir_all(target.clone()).unwrap();
+        std::fs::remove_dir_all(tmp.clone()).unwrap();
+
+        assert!(!target.exists());
+        assert!(!tmp.exists());
     }
 }

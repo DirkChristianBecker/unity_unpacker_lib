@@ -1,4 +1,4 @@
-use crate::prelude::UnityPackageReaderError;
+use crate::{prelude::UnityPackageReaderError, unpacker_error::ErrorInformation};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -40,14 +40,22 @@ impl UnityAssetFile {
         let h = match path.file_name() {
             Some(h) => h.to_str(),
             None => {
-                return Err(UnityPackageReaderError::PathError);
+                return Err(UnityPackageReaderError::PathError(ErrorInformation::new(
+                    None,
+                    file!(),
+                    line!(),
+                )));
             }
         };
 
         let hash = match h {
             Some(e) => String::from(e),
             None => {
-                return Err(UnityPackageReaderError::PathError);
+                return Err(UnityPackageReaderError::PathError(ErrorInformation::new(
+                    None,
+                    file!(),
+                    line!(),
+                )));
             }
         };
 
@@ -63,15 +71,19 @@ impl UnityAssetFile {
 
         let target = match Self::get_relative_path(&pathname) {
             Ok(e) => e,
-            Err(_) => {
-                return Err(UnityPackageReaderError::CorruptPackage);
+            Err(e) => {
+                return Err(UnityPackageReaderError::CorruptPackage(
+                    ErrorInformation::new(Some(format!("{}", e)), file!(), line!()),
+                ));
             }
         };
 
         let is_folder = match Self::get_is_folder(&meta) {
             Ok(e) => e,
-            Err(_) => {
-                return Err(UnityPackageReaderError::CouldReadMetaFile);
+            Err(e) => {
+                return Err(UnityPackageReaderError::CouldReadMetaFile(
+                    ErrorInformation::new(Some(format!("{}", e)), file!(), line!()),
+                ));
             }
         };
 
@@ -87,8 +99,10 @@ impl UnityAssetFile {
     fn get_relative_path(file: &PathBuf) -> Result<PathBuf, UnityPackageReaderError> {
         let content = match fs::read_to_string(file) {
             Ok(e) => e,
-            Err(_) => {
-                return Err(UnityPackageReaderError::CorruptPackage);
+            Err(e) => {
+                return Err(UnityPackageReaderError::CorruptPackage(
+                    ErrorInformation::new(Some(format!("{}", e)), file!(), line!()),
+                ));
             }
         };
 
@@ -98,8 +112,10 @@ impl UnityAssetFile {
     fn get_is_folder(file: &PathBuf) -> Result<bool, UnityPackageReaderError> {
         let content = match fs::read_to_string(file) {
             Ok(e) => e,
-            Err(_) => {
-                return Err(UnityPackageReaderError::CorruptPackage);
+            Err(e) => {
+                return Err(UnityPackageReaderError::CorruptPackage(
+                    ErrorInformation::new(Some(format!("{}", e)), file!(), line!()),
+                ));
             }
         };
 
@@ -122,15 +138,23 @@ impl UnityAssetFile {
         let parent = match absolute_target_path.parent() {
             Some(e) => e.to_path_buf(),
             None => {
-                return Err(UnityPackageReaderError::TargetDirectoryCouldNotBeCreated);
+                return Err(UnityPackageReaderError::TargetDirectoryCouldNotBeCreated(
+                    ErrorInformation::new(
+                        Some(format!("'{:?}' is a root directory.", target_path)),
+                        file!(),
+                        line!(),
+                    ),
+                ));
             }
         };
 
         if !parent.as_path().exists() {
-            match std::fs::create_dir_all(parent) {
+            match std::fs::create_dir_all(parent.clone()) {
                 Ok(_) => {}
-                Err(_) => {
-                    return Err(UnityPackageReaderError::TargetDirectoryCouldNotBeCreated);
+                Err(e) => {
+                    return Err(UnityPackageReaderError::TargetDirectoryCouldNotBeCreated(
+                        ErrorInformation::new(Some(format!("{}", e)), file!(), line!()),
+                    ));
                 }
             }
         }
@@ -138,8 +162,9 @@ impl UnityAssetFile {
         let asset = match std::fs::rename(&self.asset, absolute_target_path.clone()) {
             Ok(_) => absolute_target_path,
             Err(e) => {
-                println!("{:?}", e);
-                return Err(UnityPackageReaderError::CorruptPackage);
+                return Err(UnityPackageReaderError::CorruptPackage(
+                    ErrorInformation::new(Some(format!("{}", e)), file!(), line!()),
+                ));
             }
         };
 
@@ -147,14 +172,26 @@ impl UnityAssetFile {
         let f = match meta_target_file_name.file_name() {
             Some(s) => s.to_str(),
             None => {
-                return Err(UnityPackageReaderError::CorruptPackage);
+                return Err(UnityPackageReaderError::CorruptPackage(
+                    ErrorInformation::new(
+                        Some(format!("{:?} is a directory", meta_target_file_name)),
+                        file!(),
+                        line!(),
+                    ),
+                ));
             }
         };
 
         let mut file_name = match f {
             Some(s) => String::from(s),
             None => {
-                return Err(UnityPackageReaderError::CorruptPackage);
+                return Err(UnityPackageReaderError::CorruptPackage(
+                    ErrorInformation::new(
+                        Some(format!("'{:?}' is a directory", f)),
+                        file!(),
+                        line!(),
+                    ),
+                ));
             }
         };
 
@@ -162,15 +199,23 @@ impl UnityAssetFile {
         meta_target_file_name = match meta_target_file_name.parent() {
             Some(s) => s.to_path_buf(),
             None => {
-                return Err(UnityPackageReaderError::CorruptPackage);
+                return Err(UnityPackageReaderError::CorruptPackage(
+                    ErrorInformation::new(
+                        Some(format!("'{:?}' is a root directory", meta_target_file_name)),
+                        file!(),
+                        line!(),
+                    ),
+                ));
             }
         };
 
         meta_target_file_name.push(file_name);
-        match std::fs::rename(&self.meta, meta_target_file_name) {
+        match std::fs::rename(&self.meta, meta_target_file_name.clone()) {
             Ok(_) => {}
-            Err(_) => {
-                return Err(UnityPackageReaderError::CorruptPackage);
+            Err(e) => {
+                return Err(UnityPackageReaderError::CorruptPackage(
+                    ErrorInformation::new(Some(format!("{}", e)), file!(), line!()),
+                ));
             }
         };
 
